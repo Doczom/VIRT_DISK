@@ -36,29 +36,27 @@ struct DISKMEDIAINFO
         Capacity   dq ?
 ends
 
-        DEBUG                   = 1
-        __DEBUG__               = 1
-        __DEBUG_LEVEL__         = 1  ; 1 = verbose, 2 = errors only
 
 ; standard driver stuff; version of driver model = 5
 format PE DLL native 0.05
 
 section '.flat' code readable writable executable
+data fixups
+end data
 entry START
 include '../drivers/proc32.inc'
 include '../drivers/peimport.inc'
 include '../drivers/macros.inc'
-
-include '../drivers/fdo.inc'
 ; the start procedure (see the description above)
 proc START c, state:dword, cmdline:dword
         xor     eax, eax ; set return value in case we will do nothing
         cmp     dword [state], 1
         jne     .nothing
         invoke  RegService, my_service, service_proc
-        ret
+        retn
 .nothing:
-        ret
+        ;
+                ret
 endp
 
 ; get version
@@ -77,7 +75,7 @@ proc service_proc
         jnz     .add_disk
 
         cmp     [ebx + IOCTL.out_size], 4
-        jb      .error_ret
+        jl      .error_ret
         mov     eax, [ebx + IOCTL.output]
         mov     dword [eax], 1 ;API_VERSION
         xor     eax, eax
@@ -88,49 +86,41 @@ proc service_proc
         jnz     .del_disk
 
         cmp     [ebx + IOCTL.inp_size], sizeof.DISK_DEV
-        jb      .error_ret
+        jnz     .error_ret
 
         invoke  KernelAlloc, sizeof.DISK_DEV
         test    eax, eax
         jz      .error_ret
-
         mov     edi, eax
         mov     esi, [ebx + IOCTL.input]
         mov     ecx, sizeof.DISK_DEV/4
         rep movsd
-
-        ; check disk name
-
         ; add in list
 
         ; add disk
         mov     esi, eax ;save
-        add     eax, DISK_DEV.DiskName
         invoke  DiskAdd, disk_functions, \
-                         eax, esi, 0
+                         [eax + DISK_DEV.DiskName],\
+                         eax, 0
         test    eax, eax
-        mov     [esi + DISK_DEV.DiskHand], eax
         jz      .error_ret
 
-        invoke  DiskMediaChanged, eax, 1
+        invoke  DiskMediaChanged, [esi + DISK_DEV.DiskHand], 1
 
+        xor     eax, eax
         jmp     .return
 
 .del_disk:
         dec     ecx     ; check for DEV_DEL_DISK
         jnz     .get_root_list
 
-        mov     ecx, [edx + IOCTL.input]
-        mov     ecx, [ecx]
-        call    disk_dev_check
-        jnz     .error_ret
+        mov     eax, [edx + IOCTL.input]
+        mov     ecx, [eax + DISK_DEV.DiskHand]
+        invoke  DiskDel, ecx
 
         ; del item list
 
-
-        mov     eax, [ecx + DISK_DEV.DiskHand]
-        invoke  DiskDel, eax
-
+        xor     eax, eax
         jmp     .return
 
 .get_root_list:
@@ -138,7 +128,7 @@ proc service_proc
         jnz     .get_disk_info
 
         cmp     [ebx + IOCTL.out_size], 4*3
-        jb      .error_ret
+        jl      .error_ret
         mov     eax, [ebx + IOCTL.output]
         mov     dword [eax], disk_root_list
         mov     ecx, [disk_root_list]
@@ -159,11 +149,6 @@ proc service_proc
         jnz     .error_ret
         mov     esi, [ebx + IOCTL.input]
         mov     esi, [esi]
-
-        mov     ecx, esi
-        call    disk_dev_check
-        jnz     .error_ret
-
         mov     edi, [ebx + IOCTL.output]
         mov     ecx, sizeof.DISK_DEV/4
         rep movsd
@@ -177,37 +162,14 @@ proc service_proc
         retn    4
 endp
 
-; IN: ecx - ptr DISK_DEV
-; OUT: ZF - found zF - not found
-proc    disk_dev_check
-        push    eax          ; 50h
-        mov     eax, disk_root_list
-@@:
-        mov     eax, [eax]
-        cmp     eax, disk_root_list
-        jz      .nf
-        cmp     eax, ecx
-        jnz     @f
-        pop     eax
-        ret
-.nf:
-        test    eax, eax
-        pop     eax      ;58h
-        ret
-endp
-
-; DISK FUNCTION
 proc    virt_disk_close stdcall, pdata
-        mov     eax, [pdata]
+        mov     edx, [pdata]
         invoke  KernelFree, eax
         ret
 endp
 
 proc   disk_querymedia stdcall, pdata, mediainfo
         push    ecx edx
-        pusha
-        ;DEBUGF  1, "VIRT_DISK: querymedia\n"
-        popa
         mov     eax, [mediainfo]
         mov     edx, [pdata]
         mov     [eax + DISKMEDIAINFO.Flags], 0
@@ -229,42 +191,31 @@ proc    virt_disk_rd stdcall pdata: dword,\
         pusha
         mov     ecx, [pdata]
         test    [ecx + DISK_DEV.Flags], Flag.Ro
-        jz      .no_support
+        jnz     .no_support
 
-        lea     eax,[ecx + DISK_DEV.DiskPath]
-        push    eax
+        push    dword[ecx + DISK_DEV.DiskPath]
         dec     esp
         mov     byte[esp], 0
         push    dword[buffer]
 
         mov     eax, [numsectors_ptr]
         mov     eax, [eax]
-        ;DEBUGF  1, "VIRT_DISK: rd num %x\n", eax
-        mul     dword[ecx + DISK_DEV.SectorSize]
-        push    eax
-        ; get offset for startsector
-        mov     eax, dword[startsector]
         xor     edx, edx
         mul     dword[ecx + DISK_DEV.SectorSize]
-        push    edx
         push    eax
-        mov     eax, dword[startsector + 4]
-        mul     dword[ecx + DISK_DEV.SectorSize]
-        add     [esp + 4], eax
-        push    dword 0 ;read file
+        push    dword[startsector + 4]
+        push    dword[startsector]
+        push    dword 1 ;read file
 
         mov     ebx, esp
-        ;pusha
-        ;DEBUGF  1, "VIRT_DISK: error %x, %x, %x, %x, %x, %x %x\n", [ebx],[ebx+4],[ebx+8],[ebx+12],[ebx+16], [ebx+20], [ebx+24]
-        ;popa
         invoke  FS_Service
-        DEBUGF  1, "VIRT_DISK: fs code %x\n", eax
         add     esp, 6*4+1 ; size FS struct
         test    eax, eax
         popa
         jz      @f
         mov     eax, 1
 @@:
+
         ret
 .no_support:
         popa
@@ -273,33 +224,25 @@ proc    virt_disk_rd stdcall pdata: dword,\
 endp
 
 proc    virt_disk_wr stdcall pdata: dword, buffer: dword, startsector: qword, numsectors_ptr:dword
-
         pusha
         mov     ecx, [pdata]
         test    [ecx + DISK_DEV.Flags], Flag.Wo
-        jz      .no_support
+        jnz     .no_support
 
-        lea     eax,[ecx + DISK_DEV.DiskPath]
-        push    eax
+        push    dword[ecx + DISK_DEV.DiskPath]
         dec     esp
         mov     byte[esp],0
         push    dword[buffer]
 
         mov     eax, [numsectors_ptr]
         mov     eax, [eax]
-        mul     dword[ecx + DISK_DEV.SectorSize]
-        push    eax
-        ; get offset for startsector
-        mov     eax, dword[startsector]
         xor     edx, edx
         mul     dword[ecx + DISK_DEV.SectorSize]
-        push    edx
         push    eax
-        xor     edx, edx
-        mov     eax, dword[startsector + 4]
-        mul     dword[ecx + DISK_DEV.SectorSize]
-        add     [esp + 4], eax
+        push    dword[startsector + 4]
+        push    dword[startsector]
         push     dword 3 ; write file
+
         mov     ebx, esp
         invoke  FS_Service
         add     esp, 6*4+1 ; size FS struct
@@ -316,13 +259,14 @@ proc    virt_disk_wr stdcall pdata: dword, buffer: dword, startsector: qword, nu
         ret
 endp
 
+
 disk_root_list:
         dd      disk_root_list
         dd      disk_root_list
 
 align 4
 disk_functions:
-        dd      disk_functions.size
+        dd      disk_functions_end - disk_functions
         dd      virt_disk_close
         dd      0 ; no need in .closemedia
         dd      disk_querymedia
@@ -330,14 +274,8 @@ disk_functions:
         dd      virt_disk_wr
         dd      0 ; no need in .flush
         dd      0
-.size = $ - disk_functions
+disk_functions_end:
 
-notify_fs: dd 7, 0, .message,0,0
-           db '/sys/@notify',0
-.message:  db '"message" -tdE',0
-notify_fs2: dd 7, 0, .message,0,0
-            db '/sys/@notify',0
-.message:   db '"message2" -tdE',0
 ; The kernel calls this function when initializing cache subsystem for
 ; the media. This call allows the driver to adjust the cache size.
 proc tmpdisk_adjust_cache_size
@@ -351,8 +289,3 @@ proc tmpdisk_adjust_cache_size
 endp
 
 my_service      db      'VIRT_DISK',0
-
-data fixups
-end data
-
-include_debug_strings
