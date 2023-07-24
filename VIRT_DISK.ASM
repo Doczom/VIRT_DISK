@@ -3,7 +3,7 @@
 ;; Copyright (C) KolibriOS team 2023. All rights reserved.         ;;
 ;; Distributed under terms of the GNU General Public License       ;;
 ;;                                                                 ;;
-;;  Virtual disk driver for KolibriOS                              ;;
+;;  Virtual disk driver                                            ;;
 ;;                                                                 ;;
 ;;    Written by Mikhail Frolov aka Doczom                         ;;
 ;;                                                                 ;;
@@ -40,7 +40,6 @@ struct DISK_DEV
         SectorCount     rd      2
         DiskHandle      rd      1
         DiskNumber      rd      1
-        DiskName        rd      16 ;name disk, max
         Flags           rd      1 ; 1-ro 2-wo 3-rw
         TypeImage       rd      1 ; 0-raw 1-vhd 2-vdi 3-imd
         SectorSize      rd      1
@@ -125,9 +124,6 @@ proc service_proc
         test    eax, eax
         jz      .error_ret
 
-        mov     ecx,[ebx + IOCTL.output]
-        mov     [ecx], eax
-
         push    eax
         mov     edi, eax
         mov     ecx, sizeof.DISK_DEV/4
@@ -143,71 +139,79 @@ proc service_proc
 
         mov     esi, eax ;save
 
-        pusha
+        cmp     byte[esi + DISK_DEV.DiskPath], '/'
+        jnz     .add_disk.error
+
+        mov     ecx, disk_list_lock
+        invoke  MutexLock
+
         call    get_free_num
-        jnz     .not_free_num
-
+        jnz     .add_disk.error2
         mov     [esi + DISK_DEV.DiskNumber], eax
-        mov     dword[esi + DISK_DEV.DiskName], 'vd'
-        ; creating name
+        mov     ecx,[ebx + IOCTL.output]
+        mov     [ecx], eax
 
-        mov     ebx, esi
-        mov     esi, esp
+        ; init image
+        mov     eax, [esi + DISK_DEV.TypeImage]
+        cmp     eax, image_type.max_num
+        ja      .add_disk.error2
+
+        call    dword[image_type + eax*8]  ;esi - DISK_DEV*
+        test    eax, eax
+        jnz     .add_disk.error2
+
+        ; creating name
+        push    ebp
+        mov     ebp, esp
+
+        mov     eax, [esi + DISK_DEV.DiskNumber]
+        mov     edi, esp
+        dec     edi
+        mov     byte[edi], 0
         mov     ecx, 10
 @@:
         xor     edx, edx
         div     ecx
         add     edx,'0'
-        dec     esi
-        mov     byte[esi], dl
+        dec     edi
+        mov     byte[edi], dl
         test    eax, eax
         jnz     @b
 
-        mov     ecx, esp
-        sub     ecx, esi
-        lea     edi, [ebx + DISK_DEV.DiskName + 2]
-        rep movsb
-        mov     byte[edi], 0
-        test    eax, eax
-.not_free_num:
-        popa
-        jnz     .add_disk.error
-
-        ; init image
-        mov     eax, [esi + DISK_DEV.TypeImage]
-        cmp     eax, image_type.max_num
-        ja      .add_disk.error
-
-        call    dword[image_type + eax*8]
-        test    eax, eax
-        jnz     .add_disk.error
+        mov     esp, edi
+        push    word 'vd'
+        sub     edi, 2
 
         ; add disk
         mov     eax, [esi + DISK_DEV.TypeImage]
-        lea     ecx,[esi + DISK_DEV.DiskName]
         invoke  DiskAdd, dword[image_type + eax*8 + 4] , \
-                         ecx, esi, 0
-        test    eax, eax
+                         edi, esi, 0
         mov     [esi + DISK_DEV.DiskHandle], eax
-        jz      .error_ret
+        mov     esp, ebp
+        pop     ebp
+        test    eax, eax
+        jz      .add_disk.error2
 
         invoke  DiskMediaChanged, eax, 1
 
         ; add in list
-
-        mov     ecx, disk_list_lock
-        invoke  MutexLock
-
         mov     dword[esi], disk_root_list
         mov     eax, [disk_root_list + 4]
         mov     [esi + 4], eax
         mov     [eax], esi
         mov     [disk_root_list + 4], esi
+        inc     dword[disk_count]
 
         mov     ecx, disk_list_lock
         invoke  MutexUnlock
 
+        xor     eax, eax
         jmp     .return
+
+.add_disk.error2:
+        mov     ecx, disk_list_lock
+        invoke  MutexUnlock
+
 .add_disk.error:
         invoke  KernelFree, esi
         jmp     .error_ret
@@ -217,16 +221,21 @@ proc service_proc
         dec     ecx     ; check for DEV_DEL_DISK
         jnz     .get_root_list
 
+        cmp     [ebx + IOCTL.inp_size], 4
+        jb      .error_ret
+
         mov     ecx, [ebx + IOCTL.input]
         mov     ecx, [ecx]
-        call    disk_dev_check
-        jnz     .error_ret
+        call    get_disk
 
-        cmp     [ecx + DISK_DEV.DiskHandle], 0
+        test    eax, eax
         jz      .error_ret
-        mov     eax, [ecx + DISK_DEV.DiskHandle]
-        mov     [ecx + DISK_DEV.DiskHandle], 0
-        invoke  DiskDel, eax
+
+        cmp     [eax + DISK_DEV.DiskHandle], 0
+        jz      .error_ret
+        mov     ecx, [eax + DISK_DEV.DiskHandle]
+        mov     [eax + DISK_DEV.DiskHandle], 0
+        invoke  DiskDel, ecx
 
         xor     eax, eax
         jmp     .return
@@ -235,16 +244,48 @@ proc service_proc
         dec     ecx     ; check for DEV_DEL_DISK
         jnz     .get_disk_info
 
-        cmp     [ebx + IOCTL.out_size], 4*3
+        cmp     [ebx + IOCTL.inp_size], 4*2 ; offset + count
         jb      .error_ret
-        mov     eax, [ebx + IOCTL.output]
-        mov     dword [eax], disk_root_list
-        mov     ecx, [disk_root_list]
-        mov     [eax + 4], ecx
-        mov     ecx, [disk_root_list + 4]
-        mov     [eax + 8], ecx
-        xor     eax, eax
+        mov     ecx, [ebx + IOCTL.input]
+        mov     edx, [ecx]     ; offset
+        mov     eax, [ecx + 4] ; count
 
+        add     edx, eax
+        cmp     edx, [disk_count]
+        ja      .error_ret
+
+        xor     edx, edx
+        imul    eax, sizeof.DISK_DEV - 8
+        add     eax, 4
+        cmp     [ebx + IOCTL.out_size], eax
+        jb      .error_ret
+
+        mov     edi, [ebx + IOCTL.output]
+        mov     eax, [disk_count]
+        stosd
+
+        mov     edx, [ecx]
+        mov     eax, [disk_root_list]
+@@:
+        test    edx, edx
+        jz      @f
+        mov     eax, [eax]
+        dec     edx
+        jmp     @b
+@@:
+        mov     edx, [ecx + 4]
+@@:
+        test    edx, edx
+        jz      @f
+        mov     esi, eax
+        add     esi, 8
+        mov     ecx, (sizeof.DISK_DEV - 8)/4
+        rep movsd
+        mov     eax, [eax]
+        dec     edx
+        jmp     @b
+@@:
+        xor     eax, eax
         jmp     .return
 
 .get_disk_info:
@@ -252,19 +293,22 @@ proc service_proc
         jnz     .error_ret
 
         cmp     [ebx + IOCTL.inp_size], 4
-        jnz     .error_ret
-        cmp     [ebx + IOCTL.out_size], sizeof.DISK_DEV
-        jnz     .error_ret
-        mov     esi, [ebx + IOCTL.input]
-        mov     esi, [esi]
+        jb      .error_ret
+        cmp     [ebx + IOCTL.out_size], sizeof.DISK_DEV - 8
+        jb      .error_ret
+        mov     ecx, [ebx + IOCTL.input]
+        mov     ecx, [ecx]
 
-        mov     ecx, esi
-        call    disk_dev_check
-        jnz     .error_ret
+        call    get_disk
+        test    eax, eax
+        jz      .error_ret
 
+        mov     esi, eax
+        add     esi, 4*2
         mov     edi, [ebx + IOCTL.output]
-        mov     ecx, sizeof.DISK_DEV/4
+        mov     ecx, (sizeof.DISK_DEV - 8)/4
         rep movsd
+
         xor     eax, eax
         jmp     .return
 
@@ -285,7 +329,7 @@ proc    disk_dev_check
         cmp     eax, disk_root_list
         jz      .nf
         cmp     eax, ecx
-        jnz     @f
+        jnz     @b
         pop     eax
         ret
 .nf:
@@ -293,14 +337,38 @@ proc    disk_dev_check
         pop     eax
         ret
 endp
+; IN: ecx - disk number
+; OUT: eax - ptr DISK_DEV
+proc    get_disk
+        push    ecx
+        mov     ecx, disk_list_lock
+        invoke  MutexLock
+        pop     ecx
+
+        mov     eax, disk_root_list
+@@:
+        mov     eax, [eax]
+        cmp     eax, disk_root_list
+        jz      .nf
+        cmp     ecx, [eax + DISK_DEV.DiskNumber]
+        jnz     @b
+
+        push    eax
+        mov     ecx, disk_list_lock
+        invoke  MutexUnlock
+        pop     eax
+        ret
+.nf:
+        mov     ecx, disk_list_lock
+        invoke  MutexUnlock
+
+        xor     eax, eax
+        ret
+endp
 
 ; OUT: eax - number free disk
 ;      Zf - good zf - not found
 proc    get_free_num
-        ; lock disk list
-        mov     ecx, disk_list_lock
-        invoke  MutexLock
-
         xor    eax, eax
         mov    edx, disk_root_list
 @@:
@@ -315,37 +383,131 @@ proc    get_free_num
 
         test    edx, edx ; random :)
 @@:
-
-        pushfd
-        push    eax
-        ; unlock disk list
-        mov     ecx, disk_list_lock
-        invoke  MutexUnlock
-        pop     eax
-        popfd
         ret
 endp
 
+;; IN: ecx - number disk
+;; OUT: eax - ptr to DISK_DEV or zero
+;proc    get_link_disk
+;
+;        push    ecx
+;        mov     ecx, disk_list_lock
+;        invoke  MutexLock
+;        pop     ecx
+;
+;        xor     eax, eax
+;        cmp     ecx, [disk_array.len]
+;        jae     .end
+;
+;        mov     eax, [disk_array]
+;        mov     eax, [edx + ecx*4]
+;
+;.end:
+;        push    eax
+;        ; unlock disk list
+;        mov     ecx, disk_list_lock
+;        invoke  MutexUnlock
+;        pop     eax
+;        ret
+;endp
+;; IN: esi - ptr to DISK_DEV
+;; OUT: eax - offset in array or -1
+;proc    add_link_disk
+;        ; find free item
+;        mov     ecx, [disk_array]
+;        xor     eax, eax
+;        dec     eax
+;@@:
+;        inc     eax
+;        cmp     eax, [disk_array.len]
+;        jae     .not_found
+;
+;        cmp     dword[ecx + eax*4], 0
+;        jnz     @b
+;
+;        mov     [ecx + eax*4], esi
+;        ret
+;
+;.not_found:
+;        inc     dword[disk_array.len]
+;        ;get new memory
+;        mov     eax,[disk_array.len]
+;        shl     eax, 2 ;*4
+;        invoke  Kmalloc
+;        test    eax, eax
+;        jz      .err
+;        ; copy data
+;        push    edi esi
+;        mov     ecx, [disk_array.len]
+;        mov     edi, eax
+;        mov     esi, [disk_array]
+;        rep movsd
+;        pop     esi edi
+;        ; del old array
+;        xchg    [disk_array], eax
+;        invoke  Kfree
+;        mov     eax, [disk_array.len]
+;        ret
+;.err:
+;        dec     dword[disk_array.len]
+;        mov     eax, -1
+;        ret
+;endp
+;
+;; IN: ecx - offset in array
+;proc    del_link_disk
+;        mov     edx, ecx
+;        dec     edx
+;        cmp     edx,[disk_array.len]
+;        jz      .last_item
+;
+;        mov     edx,[disk_array]
+;        mov     [edx + ecx*4], 0
+;        ret
+;.last_item:
+;        dec     dword[disk_array.len]
+;        ;get new memory
+;        mov     eax,[disk_array.len]
+;        shl     eax, 2 ;*4
+;        invoke  Kmalloc
+;        test    eax, eax
+;        jz      .err
+;        ; copy data
+;        push    edi esi
+;        mov     ecx, [disk_array.len]
+;        mov     edi, eax
+;        mov     esi, [disk_array]
+;        rep movsd
+;        pop     esi edi
+;        ; del old array
+;        xchg    [disk_array], eax
+;        invoke  Kfree
+;        ret
+;.err:
+;        inc     dword[disk_array.len]
+;        mov     eax, -1
+;        ret
+;endp
+
 ; RAW IMAGE DISK FUNCTIONS
 proc    raw_disk_close stdcall, pdata
-        push    esi
-        mov     esi, [pdata]
         ; del item list
         mov     ecx, disk_list_lock
         invoke  MutexLock
 
-        mov     eax, [esi]
-        mov     edx, [esi + 4]
+        mov     ecx, [pdata]
+        mov     eax, [ecx]
+        mov     edx, [ecx + 4]
         mov     [eax + 4], edx
         mov     [edx], eax
 
+        dec     dword[disk_count]
         mov     ecx, disk_list_lock
         invoke  MutexUnlock
 
-        pop     esi
-
         mov     eax, [pdata]
         invoke  KernelFree, eax
+        ;DEBUGF  1, "VIRT_DISK: disk deleted\n"
         ret
 endp
 
@@ -478,10 +640,10 @@ proc    raw_disk_wr stdcall pdata: dword,\
         ret
 endp
 
-
 disk_root_list:
         dd      disk_root_list
         dd      disk_root_list
+disk_count: dd 0
 disk_list_lock: MUTEX
 
 image_type:
