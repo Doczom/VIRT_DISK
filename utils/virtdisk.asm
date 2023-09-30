@@ -1,3 +1,13 @@
+;-----------------------------------------------------------------------------;
+;      Copyright (C) 2023, Mikhail Frolov aka Doczom . All rights reserved.   ;
+;           Distributed under terms of the GNU General Public License         ;
+;                                                                             ;
+;                   Demo program for the VIRT_DISK driver.                    ;
+;                                                                             ;
+;                       GNU GENERAL PUBLIC LICENSE                            ;
+;                          Version 2, June 1991                               ;
+;                                                                             ;
+;-----------------------------------------------------------------------------;
 format  binary as ""
   use32
   org    0
@@ -75,10 +85,14 @@ str_runtime_err:
 str_command_successfully:
         db 'Command successfully', 13, 10, 0
 str_header_disk_list:
-        db ' disk  | file', 13, 10
-        db '-------|---------------------------------',13, 10, 0
+        db ' disk  | sector | flags | file', 13, 10
+        db '-------|--------|-------|---------------------',13, 10, 0
 str_input_disk_number:
-        db '       | ',0
+        db '       | ' ; ,0
+str_input_disk_sector:
+        db '       | ';,0
+str_input_disk_flags:
+        db '      | ',0
 str_error:
         db 'Error',0
 str_disk_info:

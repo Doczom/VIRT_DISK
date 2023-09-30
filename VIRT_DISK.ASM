@@ -3,7 +3,7 @@
 ;; Copyright (C) KolibriOS team 2023. All rights reserved.         ;;
 ;; Distributed under terms of the GNU General Public License       ;;
 ;;                                                                 ;;
-;;  Virtual disk driver                                            ;;
+;;    Virtual disk driver for KolibriOS                            ;;
 ;;                                                                 ;;
 ;;    Written by Mikhail Frolov aka Doczom                         ;;
 ;;                                                                 ;;
@@ -496,18 +496,18 @@ proc    raw_disk_close stdcall, pdata
         invoke  MutexLock
 
         mov     ecx, [pdata]
-        mov     eax, [ecx]
-        mov     edx, [ecx + 4]
-        mov     [eax + 4], edx
-        mov     [edx], eax
+        mov     eax, [ecx]      ; eax = next
+        mov     edx, [ecx + 4]  ; edx = prev
+        mov     [eax + 4], edx  ; [next.prev] = prev
+        mov     [edx], eax      ; [prev.next] = next
 
         dec     dword[disk_count]
+
         mov     ecx, disk_list_lock
         invoke  MutexUnlock
 
-        mov     eax, [pdata]
-        invoke  KernelFree, eax
-        ;DEBUGF  1, "VIRT_DISK: disk deleted\n"
+        invoke  KernelFree, [pdata]
+        DEBUGF  1, "VIRT_DISK: disk deleted\n"
         ret
 endp
 

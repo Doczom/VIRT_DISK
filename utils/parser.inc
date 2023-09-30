@@ -37,9 +37,9 @@ parse_cmd:
 
         mov     edx, add_disk.file
         call    .copy_str
-        or      dword[edx -1-4], 0x20202020
+        or      dword[edx -4], 0x20202020
         mov     dword[add_disk.size], 512
-        cmp     dword[edx - 1-4], '.iso'
+        cmp     dword[edx -4], '.iso'
         jnz     .still
         mov     dword[add_disk.size], 2048
 
@@ -143,6 +143,7 @@ parse_cmd:
         mov     byte[ecx], dl
         test    eax, eax
         jnz     @b
+
         mov     edx, str_input_disk_number + 1
         mov     dword[edx], '    '
 @@:
@@ -152,8 +153,40 @@ parse_cmd:
         inc     ecx
         cmp     ecx, esp
         jnz      @b
-        add      esp, 4
+        ;-------
+        mov     ecx, esp
+        mov     eax, [esi + info_buffer.sector_size - info_buffer]
+@@:
+        xor     edx, edx
+        div     dword[esp]
+        dec     ecx
+        add     dl, '0'
+        mov     byte[ecx], dl
+        test    eax, eax
+        jnz     @b
 
+        mov     edx, str_input_disk_sector
+        mov     dword[edx], '    '
+@@:
+        mov     al, byte[ecx]
+        mov     byte[edx], al
+        inc     edx
+        inc     ecx
+        cmp     ecx, esp
+        jnz      @b
+        ;-------
+        add      esp, 4
+        ; flags
+        mov     dword[str_input_disk_flags], '    '
+        cmp     dword[esi + info_buffer.flags - info_buffer], 1b
+        jnz     @f
+        mov     word[str_input_disk_flags], 'ro'
+@@:
+        cmp     dword[esi + info_buffer.flags - info_buffer], 11b
+        jnz     @f
+        mov     word[str_input_disk_flags], 'rw'
+@@:
+        ;-------
         pusha
         add     esi, info_buffer.path - info_buffer
         push    esi
