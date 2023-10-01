@@ -4,25 +4,31 @@ Driver for mounting RAW disk images in KolibriOS.
 To demonstrate the operation of the driver, the virtdisk program was written. Program allows you to add, delete and view virtual disks.
 ![foto](https://github.com/Doczom/VIRT_DISK/blob/main/utils/scr_1.png)
 
-Delete command:
+## List of virtdisk arguments:
+ - Delete command:
  
-   ___virtdisk -d <DISK_NUMBER>___
+   <CODE> virtdisk -d <DISK_NUMBER> </CODE>
 
-Information from disk:
+ - Information from disk:
 
-   ___virtdisk -i <DISK_NUMBER>___
+   <CODE> virtdisk -i <DISK_NUMBER> </CODE>
 
-Add disk image in file system:
+ - Add disk image in file system:
 
-   ___virtdisk -a <IMAGE_PATH> -s <SECTOR_SIZE> -t <IMAGE_TYPE> -f <ACCESS_FLAGS>___
+   <CODE> virtdisk -a <IMAGE_PATH> -s <SECTOR_SIZE> -t <IMAGE_TYPE> -f <ACCESS_FLAGS> </CODE>
 
-FLAGS:
- - ro - read only access
- - rw - read-write access
+ - Input list all virtual disks:
 
-IMAGE_TYPE:
- - RAW
+   <CODE> virtdisk -l </CODE>
 
-Input list all virtual disks:
+## List flags:
+ - <CODE>ro</CODE> - read only access
+ - <CODE>rw</CODE> - read-write access
 
-   ___virtdisk -l___
+## List disk image types:
+ - <CODE>RAW</CODE> - it is used to mount disk images in "raw", "img" and "iso" formats
+
+## Exemples command:
+   <CODE> virtdisk -a /sd0/4/kolibri.img -f ro </CODE>
+   
+   <CODE> virtdisk -d 3 </CODE>
